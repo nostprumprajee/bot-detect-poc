@@ -1,107 +1,246 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Bot Detection POC</title>
-  <style>
-    body { font-family: sans-serif; padding: 20px; }
-    #result { margin-top: 20px; font-size: 18px; }
-  </style>
+<meta charset="UTF-8">
+<title>Anti-Bot POC v2</title>
+<style>
+    body {
+        background: #111;
+        color: #eee;
+        font-family: monospace;
+        display: flex;
+        height: 100vh;
+        margin: 0;
+    }
+    #canvas {
+        background: #000;
+        flex: 1;
+        cursor: crosshair;
+    }
+    #debug {
+        width: 360px;
+        background: #1b1b1b;
+        padding: 10px;
+        font-size: 13px;
+        overflow-y: auto;
+        border-left: 1px solid #333;
+    }
+    .score-good { color: #4CAF50; }
+    .score-bad { color: #FF5252; }
+</style>
 </head>
 <body>
 
-<h1>Bot Detection POC</h1>
-<p>ขยับเมาส์ / พิมพ์ / คลิก แล้วกดปุ่ม "Assess" เพื่อดูคะแนน human vs bot</p>
+<canvas id="canvas"></canvas>
 
-<button id="assessBtn">Assess</button>
-<div id="result"></div>
+<div id="debug">
+    <h2>Bot Debug Panel</h2>
+    <div id="log"></div>
+    <hr>
+    <b>Hotkeys:</b><br>
+    - Press <b>C</b> to CLEAR screen + reset data<br>
+</div>
 
 <script>
-async function hashString(s) {
-  const buf = new TextEncoder().encode(s);
-  const hash = await crypto.subtle.digest("SHA-256", buf);
-  return [...new Uint8Array(hash)].map(x => x.toString(16).padStart(2, "0")).join("");
-}
+/* ============================================================
+   CONFIG
+============================================================ */
+const BOT_THRESHOLD = 0.6;
+const SAMPLE_LIMIT = 3000;
 
-function collectBasic() {
-  return {
-    ua: navigator.userAgent,
-    platform: navigator.platform,
-    language: navigator.language,
-    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    screen: { w: screen.width, h: screen.height }
-  };
-}
+/* ============================================================
+   CANVAS SETUP
+============================================================ */
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+canvas.width = window.innerWidth - 360;
+canvas.height = window.innerHeight;
 
-function canvasFingerprint() {
-  const c = document.createElement("canvas");
-  const ctx = c.getContext("2d");
-  ctx.textBaseline = "top";
-  ctx.font = "16px Arial";
-  ctx.fillStyle = "#f60";
-  ctx.fillText("POC-FP", 2, 20);
-  return c.toDataURL();
-}
+let points = [];
+let heatmap = new Array(canvas.width * canvas.height).fill(0);
 
-async function initFingerprint() {
-  const basic = collectBasic();
-  const canvas = canvasFingerprint();
-  const raw = JSON.stringify({ basic, canvas });
-  const fp = await hashString(raw);
+let lastTime = Date.now();
 
-  const r = await fetch("/api/fingerprint", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      fp,
-      basic,
-      canvasHash: await hashString(canvas)
-    })
-  });
-
-  const data = await r.json();
-  window.pocToken = data.token;
-}
-
-const events = [];
-window.addEventListener("mousemove", e => {
-  events.push({ type: "mousemove", x: e.clientX, y: e.clientY, t: Date.now() });
-});
-window.addEventListener("click", e => {
-  events.push({ type: "click", x: e.clientX, y: e.clientY, t: Date.now() });
-});
-window.addEventListener("keydown", e => {
-  events.push({ type: "keydown", key: e.key, t: Date.now() });
-});
-
-setInterval(() => {
-  if (!events.length) return;
-
-  fetch("/api/telemetry", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-session-id": "demo-session"
-    },
-    body: JSON.stringify({ events: events.splice(0) })
-  });
-}, 1500);
-
-document.getElementById("assessBtn").onclick = async () => {
-  const r = await fetch("/api/assess", {
-    headers: {
-      "x-auth-token": window.pocToken,
-      "x-session-id": "demo-session"
+/* ============================================================
+   CLEAR SCREEN (HOTKEY C)
+============================================================ */
+document.addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() === "c") {
+        clearScreen();
     }
-  });
+});
 
-  const data = await r.json();
-  document.getElementById("result").innerText =
-    JSON.stringify(data, null, 2);
-};
+function clearScreen() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    points = [];
+    heatmap.fill(0);
+    document.getElementById("log").innerHTML += "<br>--- Screen Cleared ---<br>";
+}
 
-// run fingerprint once page loaded
-initFingerprint();
+/* ============================================================
+   MOUSE CAPTURE
+============================================================ */
+canvas.addEventListener("mousemove", (e) => {
+    const now = Date.now();
+    const dt = now - lastTime;
+
+    const p = {
+        x: e.clientX,
+        y: e.clientY,
+        t: now,
+        dt: dt
+    };
+
+    points.push(p);
+    if (points.length > SAMPLE_LIMIT) points.shift();
+
+    addHeat(p.x, p.y);
+    drawEverything();
+    updateAnalysis();
+
+    lastTime = now;
+});
+
+/* ============================================================
+   HEATMAP UPDATE
+============================================================ */
+function addHeat(x, y) {
+    const idx = Math.floor(y) * canvas.width + Math.floor(x);
+    if (heatmap[idx] !== undefined) {
+        heatmap[idx] += 1;
+    }
+}
+
+/* ============================================================
+   DRAW EVERYTHING
+============================================================ */
+function drawEverything() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    drawHeatmap();
+    drawPath();
+}
+
+/* ============================================================
+   DRAW HEATMAP (alpha-based)
+============================================================ */
+function drawHeatmap() {
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = img.data;
+
+    for (let i = 0; i < heatmap.length; i++) {
+        const intensity = heatmap[i];
+        if (intensity > 0) {
+            const alpha = Math.min(255, intensity * 12); 
+            const offset = i * 4;
+            data[offset] = 255;      // red
+            data[offset + 1] = 80;   // green
+            data[offset + 2] = 0;    // blue
+            data[offset + 3] = alpha;
+        }
+    }
+
+    ctx.putImageData(img, 0, 0);
+}
+
+/* ============================================================
+   DRAW MOUSE PATH
+============================================================ */
+function drawPath() {
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#0f0";
+
+    ctx.beginPath();
+    points.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+    });
+    ctx.stroke();
+}
+
+/* ============================================================
+   BEHAVIOR ANALYSIS ENGINE
+============================================================ */
+function updateAnalysis() {
+    if (points.length < 20) return;
+
+    const vel = [];
+    const acc = [];
+    const jitter = [];
+
+    for (let i = 1; i < points.length; i++) {
+        const dx = points[i].x - points[i - 1].x;
+        const dy = points[i].y - points[i - 1].y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const dt = points[i].dt || 16;
+
+        const v = dist / dt;
+        vel.push(v);
+
+        if (i > 1) {
+            const dv = v - vel[i - 2];
+            acc.push(Math.abs(dv));
+        }
+
+        const angle = Math.atan2(dy, dx);
+        if (i > 1) {
+            const prevAngle = Math.atan2(
+                points[i - 1].y - points[i - 2].y,
+                points[i - 1].x - points[i - 2].x
+            );
+            jitter.push(Math.abs(angle - prevAngle));
+        }
+    }
+
+    const avgSpeed = avg(vel);
+    const speedVar = variance(vel);
+    const accVar = variance(acc);
+    const jitterVar = variance(jitter);
+
+    let botScore = 0;
+    if (avgSpeed < 0.02) botScore += 0.2;
+    if (avgSpeed > 1.2) botScore += 0.2;
+    if (speedVar < 0.003) botScore += 0.25;
+    if (accVar < 0.001) botScore += 0.25;
+    if (jitterVar < 0.01) botScore += 0.1;
+
+    botScore = Math.min(1, botScore);
+
+    renderDebugPanel({ avgSpeed, speedVar, accVar, jitterVar, botScore });
+}
+
+/* ============================================================
+   DEBUG PANEL
+============================================================ */
+function renderDebugPanel({ avgSpeed, speedVar, accVar, jitterVar, botScore }) {
+    document.getElementById("log").innerHTML = `
+        <b>Movement Stats</b><br>
+        Avg speed: ${avgSpeed.toFixed(4)}<br>
+        Speed variance: ${speedVar.toFixed(4)}<br>
+        Acc variance: ${accVar.toFixed(4)}<br>
+        Jitter variance: ${jitterVar.toFixed(4)}<br><br>
+
+        <b>Bot Score:</b> 
+        <span class="${botScore > BOT_THRESHOLD ? "score-bad" : "score-good"}">
+            ${(botScore * 100).toFixed(1)}%
+        </span><br><br>
+
+        Classification: 
+        <b style="color:${botScore > BOT_THRESHOLD ? "#FF5252" : "#4CAF50"};">
+            ${botScore > BOT_THRESHOLD ? "BOT-LIKE" : "HUMAN"}
+        </b><br><br>
+    `;
+}
+
+/* ============================================================
+   MATH HELPERS
+============================================================ */
+function avg(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
+function variance(arr) {
+    if (arr.length < 2) return 0;
+    const m = avg(arr);
+    return avg(arr.map(x => (x - m) ** 2));
+}
 </script>
 
 </body>
