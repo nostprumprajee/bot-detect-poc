@@ -1,250 +1,366 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<title>Bot / Human Behavior + Fingerprinting + ML Prediction Demo (with Training Progress)</title>
+<meta charset="utf-8" />
+<title>Bot/Human ML Demo — Features Inspector (Realtime)</title>
 <style>
-  body { margin:0; font-family:Arial; background:#111; color:#eee; }
-  #ui { position:fixed; top:0; left:0; width:420px; height:100%; background:#1b1b1b; padding:15px; overflow-y:auto; border-right:2px solid #333; }
-  #canvas { position:absolute; left:420px; top:0; }
-  h2 { margin-top:0; }
-  .section { margin-bottom:18px; padding-bottom:12px; border-bottom:1px solid #444; }
-  label { display:block; margin-top:6px; }
-  input[type=range] { width:100%; }
-  select, button { width:100%; padding:8px; margin-top:6px; background:#333; color:#fff; border:1px solid #555; cursor:pointer; }
-  #debug, #predictResult { font-size:12px; white-space:pre-wrap; background:#000; padding:10px; margin-top:10px; border:1px solid #444; height:140px; overflow:auto; }
-  .progress { height:14px; background:#262626; border:1px solid #333; margin-top:6px; }
-  .progress > .bar { height:100%; width:0%; background:linear-gradient(90deg,#4caf50,#8bc34a); }
-  canvas.small { width:100%; height:80px; background:#000; display:block; margin-top:6px; }
+  body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Arial;background:#0f1724;color:#e6eef8}
+  #ui{position:fixed;left:0;top:0;width:460px;height:100%;background:#071026;padding:16px;box-sizing:border-box;border-right:1px solid #073047;overflow:auto}
+  #canvas{position:absolute;left:460px;top:0;background:#00121a}
+  h1{font-size:16px;margin:0 0 12px}
+  .section{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid #072b3b}
+  label{display:block;margin:8px 0 4px}
+  select,input[type=range],button{width:100%;box-sizing:border-box;padding:8px;background:#072b3b;border:1px solid #0b4a5e;color:#e6eef8}
+  button{cursor:pointer}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}
+  th,td{padding:6px;border-bottom:1px solid #072b3b;text-align:left}
+  th{background:#062a34;font-weight:600}
+  .small{font-size:12px;color:#9fc5d8}
+  .val-raw{color:#ffd28a}
+  .val-norm{color:#8fe3a8}
 </style>
 </head>
 <body>
 <div id="ui">
-  <h2>Bot / Human ML Demo</h2>
+  <h1>Bot/Human ML Demo — Feature Inspector</h1>
 
   <div class="section">
-    <h3>Mode & Simulator</h3>
+    <strong>Simulator</strong>
+    <label>Mode</label>
     <select id="mode">
       <option value="human">Human (Real)</option>
-      <option value="straight">Bot: Straight</option>
-      <option value="zigzag">Bot: ZigZag</option>
-      <option value="circle">Bot: Circle</option>
-      <option value="bezier">Bot: Bézier</option>
-      <option value="random">Bot: Random Jitter</option>
-      <option value="humanlike">Bot: Human-like</option>
+      <option value="straight">Bot — Straight</option>
+      <option value="zigzag">Bot — ZigZag</option>
+      <option value="circle">Bot — Circle</option>
+      <option value="bezier">Bot — Bézier</option>
+      <option value="random">Bot — Random Jitter</option>
+      <option value="humanlike">Bot — Human-like</option>
     </select>
-    <button id="startBot">Start Bot</button>
-    <button id="stopBot">Stop Bot</button>
-  </div>
 
-  <div class="section">
-    <h3>Speed & Behavior</h3>
     <label>Speed <span id="speedVal">2</span></label>
-    <input id="speed" type="range" min="1" max="10" value="2" />
-
+    <input id="speed" type="range" min="0.5" max="8" step="0.1" value="2">
     <label>Jitter <span id="jitterVal">1</span></label>
-    <input id="jitter" type="range" min="0" max="20" value="1" />
+    <input id="jitter" type="range" min="0" max="20" step="0.5" value="1">
 
-    <label>Smoothing <span id="smoothVal">0.5</span></label>
-    <input id="smooth" type="range" min="0" max="1" step="0.1" value="0.5" />
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button id="start">Start</button>
+      <button id="stop">Stop</button>
+      <button id="clear">Clear</button>
+    </div>
   </div>
 
   <div class="section">
-    <h3>Display</h3>
-    <button id="toggleHeat">Toggle Heatmap</button>
-    <button id="togglePath">Toggle Path</button>
-    <button id="clearCanvas">Clear Screen</button>
+    <strong>Display</strong>
+    <label><input type="checkbox" id="heatChk" checked> Heatmap</label>
+    <label><input type="checkbox" id="pathChk" checked> Path</label>
   </div>
 
   <div class="section">
-    <h3>Fingerprint Debug</h3>
-    <button id="refreshFP">Recalculate Fingerprint</button>
-    <div id="debug"></div>
+    <strong>Features (Realtime)</strong>
+    <div class="small">Shows <em>raw</em> + <em>normalized</em> values computed from the current path (updates on every move)</div>
+
+    <table id="featureTable">
+      <thead><tr><th>Feature</th><th>Raw</th><th>Normalized</th></tr></thead>
+      <tbody>
+        <!-- rows injected by JS -->
+      </tbody>
+    </table>
+    <div class="small" style="margin-top:8px">Normalization uses mean/std computed from loaded <code>dataset_bot_human.json</code>.</div>
   </div>
 
   <div class="section">
-    <h3>Prediction (ML)</h3>
-    <button id="runPredict">Run Prediction</button>
-    <div id="predictResult">Model: <span id="modelStatus">loading...</span></div>
+    <strong>ML / Training</strong>
+    <div id="modelStatus">Model: <span id="mstat">loading dataset & training...</span></div>
+    <div style="margin-top:8px"><button id="retrain">Retrain Model (from dataset)</button></div>
+    <div style="margin-top:8px"><button id="predictBtn">Run Prediction (current features)</button></div>
+    <div id="predictOut" class="small" style="margin-top:8px"></div>
   </div>
 
   <div class="section">
-    <h3>Training Progress</h3>
-    <div>Epoch: <span id="epochCount">-</span></div>
-    <div class="progress"><div class="bar" id="progressBar"></div></div>
-    <div>Last Loss: <span id="lastLoss">-</span> | Last Acc: <span id="lastAcc">-</span></div>
-    <canvas id="trainChart" class="small"></canvas>
-    <div style="font-size:12px;margin-top:6px;color:#ccc">You can re-train from <code>dataset_bot_human.json</code> (2000 samples) loaded from same folder.</div>
+    <strong>Dataset summary</strong>
+    <div id="datasetSummary" class="small">loading dataset...</div>
   </div>
 
 </div>
 
 <canvas id="canvas"></canvas>
+
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
 <script>
-// Canvas setup
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
-canvas.width = window.innerWidth - 420;
+// layout
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth - 460;
 canvas.height = window.innerHeight;
 
-// State
-let mouseX=canvas.width/2, mouseY=canvas.height/2;
-let heatmapEnabled=true, pathEnabled=true;
-let botRunning=false, botAngle=0, botT=0;
-let pathPoints=[];
-let speedVal=2,jitterVal=1,smoothVal=0.5;
+// UI
+const startBtn = document.getElementById('start');
+const stopBtn = document.getElementById('stop');
+const clearBtn = document.getElementById('clear');
+const modeSelect = document.getElementById('mode');
+const speedRange = document.getElementById('speed');
+const jitterRange = document.getElementById('jitter');
+const heatChk = document.getElementById('heatChk');
+const pathChk = document.getElementById('pathChk');
+const featureTableBody = document.querySelector('#featureTable tbody');
+const modelStatus = document.getElementById('mstat');
+const datasetSummary = document.getElementById('datasetSummary');
+const predictOut = document.getElementById('predictOut');
 
-// Training history for chart
-let trainLossHistory=[];
-let trainAccHistory=[];
-
-// Heatmap
+let running=false; let mode='human'; let speed=2, jitter=1;
+let pathPoints = []; // {x,y,t}
 let heat = Array(canvas.width).fill(0).map(()=>Array(canvas.height).fill(0));
-function addHeat(x,y){if(heatmapEnabled&&x>=0&&y>=0&&x<canvas.width&&y<canvas.height) heat[Math.floor(x)][Math.floor(y)]++;}
-function renderHeat(){const img=ctx.getImageData(0,0,canvas.width,canvas.height); const d=img.data; for(let x=0;x<canvas.width;x++){for(let y=0;y<canvas.height;y++){let v=heat[x][y]; if(v>0){const i=(y*canvas.width+x)*4; d[i]=255;d[i+1]=100;d[i+2]=0;d[i+3]=Math.min(v*6,200);}}} ctx.putImageData(img,0,0);}
 
-// Mouse tracking
-canvas.addEventListener("mousemove",e=>{const rect=canvas.getBoundingClientRect(); mouseX=e.clientX-rect.left; mouseY=e.clientY-rect.top; addHeat(mouseX,mouseY); pathPoints.push({x:mouseX,y:mouseY});});
+// dataset-level scaler (mean/std) — will be computed from loaded dataset
+let featureMeans = null, featureStds = null;
 
-// Bot simulation
-function botStraight(){mouseX+=speedVal;}
-function botZigzag(){mouseX+=speedVal; mouseY=canvas.height/2+Math.sin(mouseX/20)*80;}
-function botCircle(){botAngle+=0.02*speedVal; const r=150; mouseX=canvas.width/2+Math.cos(botAngle)*r; mouseY=canvas.height/2+Math.sin(botAngle)*r;}
-function botBezier(){botT+=0.002*speedVal; if(botT>1) botT=0; const t=botT,p=[{x:100,y:200},{x:300,y:50},{x:600,y:400},{x:900,y:150}]; mouseX=(1-t)**3*p[0].x+3*(1-t)**2*t*p[1].x+3*(1-t)*t**2*p[2].x+t**3*p[3].x; mouseY=(1-t)**3*p[0].y+3*(1-t)**2*t*p[1].y+3*(1-t)*t**2*p[2].y+t**3*p[3].y;}
-function botRandom(){mouseX+=(Math.random()*4-2)*speedVal; mouseY+=(Math.random()*4-2)*speedVal;}
-function botHumanlike(){mouseX+=speedVal+(Math.random()*3-1.5); mouseY+=Math.sin(mouseX/50)*2+(Math.random()*2-1);}
-const botMap={straight:botStraight,zigzag:botZigzag,circle:botCircle,bezier:botBezier,random:botRandom,humanlike:botHumanlike};
+// basic UI bindings
+startBtn.onclick = ()=>{ running=true; mode = modeSelect.value; };
+stopBtn.onclick = ()=>{ running=false; };
+clearBtn.onclick = ()=>{ pathPoints=[]; heat = Array(canvas.width).fill(0).map(()=>Array(canvas.height).fill(0)); predictOut.innerText=''; render(); };
+modeSelect.onchange = ()=> mode = modeSelect.value;
+speedRange.oninput = e=>{ speed = parseFloat(e.target.value); document.getElementById('speedVal').innerText = speed; };
+jitterRange.oninput = e=>{ jitter = parseFloat(e.target.value); document.getElementById('jitterVal').innerText = jitter; };
 
-// Loop
-function drawEverything(){ctx.clearRect(0,0,canvas.width,canvas.height); if(botRunning){const mode=document.getElementById("mode").value;if(mode!="human") botMap[mode](); addHeat(mouseX,mouseY); pathPoints.push({x:mouseX,y:mouseY});} if(pathEnabled){ctx.strokeStyle="rgba(0,200,255,0.8)";ctx.lineWidth=1.5;ctx.beginPath(); for(let i=0;i<pathPoints.length;i++){const p=pathPoints[i]; i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y);}ctx.stroke();} if(heatmapEnabled) renderHeat(); ctx.beginPath(); ctx.arc(mouseX,mouseY,5,0,Math.PI*2); ctx.fillStyle="#0f0"; ctx.fill();}
-function loop(){drawEverything(); requestAnimationFrame(loop);} loop();
+// drawing helpers
+function addHeat(x,y){ if(!heatChk.checked) return; if(x>=0 && y>=0 && x<canvas.width && y<canvas.height) heat[Math.floor(x)][Math.floor(y)] += 1; }
+function renderHeat(){ if(!heatChk.checked) return; const img = ctx.getImageData(0,0,canvas.width,canvas.height); const d = img.data; for(let x=0;x<canvas.width;x++){ for(let y=0;y<canvas.height;y++){ const v = heat[x][y]; if(v>0){ const idx=(y*canvas.width+x)*4; d[idx]=255; d[idx+1]=110; d[idx+2]=0; d[idx+3]=Math.min(v*6,220); } } } ctx.putImageData(img,0,0); }
 
-// Controls
-document.getElementById("startBot").onclick=()=>botRunning=true;
-document.getElementById("stopBot").onclick=()=>botRunning=false;
-document.getElementById("speed").oninput=e=>{speedVal=Number(e.target.value); document.getElementById('speedVal').textContent=speedVal;};
-document.getElementById("jitter").oninput=e=>{jitterVal=Number(e.target.value); document.getElementById('jitterVal').textContent=jitterVal;};
-document.getElementById("smooth").oninput=e=>{smoothVal=Number(e.target.value); document.getElementById('smoothVal').textContent=smoothVal;};
+function renderPath(){ if(!pathChk.checked) return; ctx.lineWidth = 2; ctx.strokeStyle = '#6ee7b7'; ctx.beginPath(); for(let i=0;i<pathPoints.length;i++){ const p = pathPoints[i]; if(i===0) ctx.moveTo(p.x,p.y); else ctx.lineTo(p.x,p.y); } ctx.stroke(); }
 
-document.getElementById("toggleHeat").onclick=()=>heatmapEnabled=!heatmapEnabled;
-document.getElementById("togglePath").onclick=()=>pathEnabled=!pathEnabled;
-document.getElementById("clearCanvas").onclick=()=>{heat=Array(canvas.width).fill(0).map(()=>Array(canvas.height).fill(0)); pathPoints=[]; document.getElementById('predictResult').innerText='';};
+function render(){ ctx.clearRect(0,0,canvas.width,canvas.height); renderHeat(); renderPath(); if(pathPoints.length){ const p = pathPoints[pathPoints.length-1]; ctx.beginPath(); ctx.arc(p.x,p.y,6,0,Math.PI*2); ctx.fillStyle = '#34d399'; ctx.fill(); } }
 
-// Fingerprint
-async function getFingerprint(){let fp={};const c=document.createElement("canvas"),cctx=c.getContext("2d"); c.width=200;c.height=50;cctx.textBaseline="top";cctx.font="16px Arial";cctx.fillText("FINGERPRINT_TEST",10,10); fp.canvasHash=btoa(c.toDataURL()); try{ const audioCtx=new (window.AudioContext||window.webkitAudioContext)(); const osc=audioCtx.createOscillator(); const analyser=audioCtx.createAnalyser(); osc.connect(analyser); osc.start(); const arr=new Uint8Array(analyser.frequencyBinCount); analyser.getByteFrequencyData(arr); fp.audioHash=btoa(String.fromCharCode(...arr.slice(0,32))); osc.stop(); }catch(e){fp.audioHash='audio-not-available';} return fp;}
-document.getElementById("refreshFP").onclick=async()=>{const fp=await getFingerprint(); document.getElementById("debug").textContent=JSON.stringify(fp,null,2);};
+// simulator functions
+let botT = 0, botAngle = 0;
+function botStep(){ const mode = modeSelect.value; const w=canvas.width,h=canvas.height; switch(mode){
+  case 'straight':
+  botT += 2 * speed;   // <---- เพิ่มส่วนนี้
+  pathPoints.push({x: (botT % w), y: h/2, t: Date.now()});
+  break;
+  case 'zigzag':
+  botT += 2 * speed;   // <---- เพิ่มส่วนนี้เช่นกัน
+  pathPoints.push({
+    x: (botT % w),
+    y: h/2 + Math.sin(botT/12)*80,
+    t: Date.now()
+  });
+  break;
+  case 'circle': botAngle += 0.03*speed; pathPoints.push({x: w/2 + Math.cos(botAngle)*160, y: h/2 + Math.sin(botAngle)*160, t: Date.now()}); break;
+  case 'bezier': botT += 0.6*speed; const t=(Math.sin(botT/120)+1)/2; const p0={x:50,y:h/2}, p1={x:w/3,y:50}, p2={x:2*w/3,y:h-50}, p3={x:w-50,y:h/2}; const bx = (1-t)**3*p0.x + 3*(1-t)**2*t*p1.x + 3*(1-t)*t**2*p2.x + t**3*p3.x; const by = (1-t)**3*p0.y + 3*(1-t)**2*t*p1.y + 3*(1-t)*t**2*p2.y + t**3*p3.y; pathPoints.push({x: bx + (Math.random()*2-1)*jitter, y: by + (Math.random()*2-1)*jitter, t: Date.now()}); break;
+  case 'random': pathPoints.push({x: Math.random()*w, y: Math.random()*h, t: Date.now()}); break;
+  case 'humanlike': botT += 0.5*speed; const hx = w/2 + Math.sin(botT/40)*180; const hy = h/2 + Math.cos(botT/30)*90; pathPoints.push({x: hx + (Math.random()*jitter - jitter/2), y: hy + (Math.random()*jitter - jitter/2), t: Date.now()}); break;
+}
+// keep size bounded
+if(pathPoints.length>400) pathPoints.splice(0, pathPoints.length-400);
+const p = pathPoints[pathPoints.length-1]; addHeat(p.x,p.y);
+}
 
-// ML: load dataset and train in-browser with progress callbacks
-let model=null;
-async function loadAndTrainModel(){
-  document.getElementById('modelStatus').textContent='loading dataset...';
-  const resp = await fetch('dataset_bot_human.json');
-  const data = await resp.json();
-  const X = data.map(d=>d.features);
-  const y = data.map(d=>d.label);
-  const Xtensor = tf.tensor2d(X);
-  const ytensor = tf.tensor2d(y, [y.length,1]);
+// mouse manual capture
+canvas.addEventListener('mousemove', e => {
+  if(modeSelect.value === 'human'){ const rect = canvas.getBoundingClientRect(); const x = e.clientX - rect.left; const y = e.clientY - rect.top; pathPoints.push({x,y,t:Date.now()}); addHeat(x,y); if(pathPoints.length>400) pathPoints.shift(); }
+});
 
-  // create model
+// main loop
+function mainLoop(){ if(running && modeSelect.value !== 'human') botStep(); render(); requestAnimationFrame(mainLoop); }
+mainLoop();
+
+// ----- FEATURE EXTRACTION (Full set) -----
+function extractFeaturesFull(points){
+  const n = points.length; if(n < 3) return null;
+  // ensure time exists
+  for(let i=0;i<n;i++) if(!points[i].t) points[i].t = Date.now();
+  // compute dt, dx, dy, dist, speed
+  const dt = [], dx = [], dy = [], dist = [], speed = [];
+  for(let i=1;i<n;i++){
+    const ddx = points[i].x - points[i-1].x;
+    const ddy = points[i].y - points[i-1].y;
+    const dtime = Math.max(1, points[i].t - points[i-1].t); // ms
+    dx.push(ddx); dy.push(ddy); dt.push(dtime);
+    const d = Math.hypot(ddx, ddy);
+    dist.push(d);
+    speed.push(d / dtime); // px per ms
+  }
+
+  const stats = (arr) => ({mean: arr.reduce((a,b)=>a+b,0)/arr.length, median: (()=>{const s=[...arr].sort((a,b)=>a-b); const m=Math.floor(s.length/2); return s.length%2? s[m] : (s[m-1]+s[m])/2; })(), max: Math.max(...arr), min: Math.min(...arr), var: (()=>{const m = arr.reduce((a,b)=>a+b,0)/arr.length; return arr.reduce((s,v)=>s + (v-m)*(v-m),0)/arr.length})() });
+
+  const speedStats = stats(speed);
+  const acc = []; for(let i=1;i<speed.length;i++) acc.push((speed[i]-speed[i-1]) / (dt[i]||1));
+  const accStats = acc.length? stats(acc) : {mean:0,var:0,median:0,max:0,min:0};
+  const jerk = []; for(let i=1;i<acc.length;i++) jerk.push(acc[i]-acc[i-1]);
+  const jerkStats = jerk.length? stats(jerk): {mean:0,var:0,median:0,max:0,min:0};
+
+  // pauses
+  const pauseThreshold = 200; // ms
+  const pauses = dt.filter(d=>d >= pauseThreshold);
+  const pauseCount = pauses.length;
+  const totalTime = (points[n-1].t - points[0].t) || 1;
+  const pauseRatio = pauses.reduce((a,b)=>a+b,0) / totalTime;
+
+  // straightness & curvature
+  const pathLen = dist.reduce((a,b)=>a+b,0);
+  const displacement = Math.hypot(points[n-1].x - points[0].x, points[n-1].y - points[0].y);
+  const straightness = displacement / (pathLen + 1e-9);
+
+  // turning angles
+  const angles = [];
+  for(let i=2;i<n;i++){
+    const v1x = points[i-1].x - points[i-2].x; const v1y = points[i-1].y - points[i-2].y;
+    const v2x = points[i].x - points[i-1].x; const v2y = points[i].y - points[i-1].y;
+    const dot = v1x*v2x + v1y*v2y;
+    const m1 = Math.hypot(v1x,v1y), m2 = Math.hypot(v2x,v2y);
+    if(m1*m2 > 1e-9){ let cos = dot/(m1*m2); cos = Math.max(-1, Math.min(1, cos)); angles.push(Math.acos(cos)); }
+  }
+  const angleStats = angles.length? stats(angles): {mean:0,var:0,median:0,max:0,min:0};
+
+  // direction entropy (histogram of angles)
+  function entropy(arr){ if(arr.length===0) return 0; const bins = 12; const min = Math.min(...arr), max = Math.max(...arr); const width = (max-min) / bins || 1; const counts = Array(bins).fill(0); arr.forEach(v=>{ const idx = Math.min(bins-1, Math.floor((v-min)/width)); counts[idx]++; }); const probs = counts.map(c=>c/arr.length).filter(p=>p>0); return -probs.reduce((s,p)=>s + p*Math.log2(p), 0); }
+  const dirEntropy = entropy(angles);
+
+  // interaction counts (if you track clicks separately -> not present here)
+
+  // assemble features (selected subset + extras)
+  const features = {
+    avgSpeed: speedStats.mean,
+    medSpeed: speedStats.median,
+    maxSpeed: speedStats.max,
+    speedVar: speedStats.var,
+    avgAcc: accStats.mean,
+    accVar: accStats.var,
+    jerkVar: jerkStats.var,
+    pauseCount,
+    pauseRatio,
+    straightness,
+    meanCurvature: angleStats.mean,
+    curvatureVar: angleStats.var,
+    dirEntropy,
+    pathLen,
+    displacement
+  };
+
+  return features;
+}
+
+// ----- normalizer utilities (compute from dataset) -----
+let dataset = null;
+async function loadDatasetAndComputeScaler(){
+  try{
+    const resp = await fetch('dataset_bot_human.json');
+    dataset = await resp.json();
+    datasetSummary.innerText = `Samples: ${dataset.length} (human=${dataset.filter(d=>d.label===0).length}, bot=${dataset.filter(d=>d.label===1).length})`;
+    // compute mean/std for features we expect (we map dataset.features order to our core features)
+    // dataset.features assumed to be [avgDx, avgDy, speedVar, accVar, straightness, jitterVar]
+    // We'll compute scaler for the features our extractor produces by mapping/approx where possible.
+
+    // Build feature arrays for each sample using a mapping function that converts dataset.features
+    const mapped = dataset.map(d => {
+      const f = d.features; // 6 features in dataset
+      // map to our extracted features where reasonable
+      return {
+        avgSpeed: (Math.abs(f[0]) + Math.abs(f[1]))/2, // approx avg speed proxy
+        speedVar: f[2],
+        accVar: f[3],
+        straightness: f[4],
+        jitterVar: f[5]
+      };
+    });
+
+    // compute mean/std for fields we will normalize (choose a safe subset)
+    const keys = ['avgSpeed','speedVar','accVar','straightness','jitterVar'];
+    featureMeans = {}; featureStds = {};
+    keys.forEach(k => {
+      const vals = mapped.map(m=>m[k]);
+      const mean = vals.reduce((a,b)=>a+b,0)/vals.length;
+      const variance = vals.reduce((s,v)=>s + Math.pow(v-mean,2),0)/vals.length;
+      featureMeans[k] = mean; featureStds[k] = Math.sqrt(variance) || 1;
+    });
+
+    modelStatus.innerText = 'dataset loaded — training model...';
+    await trainModelFromDataset();
+  }catch(e){ datasetSummary.innerText = 'Failed to load dataset: '+e.message; }
+}
+
+// ----- train model in browser (simple) -----
+let model = null;
+async function trainModelFromDataset(){
+  if(!dataset) return;
+  // convert dataset to tensors with feature mapping same as above
+  const mapped = dataset.map(d=>{
+    const f = d.features;
+    return [ (Math.abs(f[0]) + Math.abs(f[1]))/2, f[2], f[3], f[4], f[5] ];
+  });
+  const labels = dataset.map(d=>d.label);
+  const X = tf.tensor2d(mapped);
+  const y = tf.tensor2d(labels.map(v=>[v]));
+  // build model
   model = tf.sequential();
-  model.add(tf.layers.dense({units:32, activation:'relu', inputShape:[6]}));
+  model.add(tf.layers.dense({units:32, activation:'relu', inputShape:[5]}));
   model.add(tf.layers.dense({units:16, activation:'relu'}));
   model.add(tf.layers.dense({units:1, activation:'sigmoid'}));
   model.compile({optimizer:tf.train.adam(0.001), loss:'binaryCrossentropy', metrics:['accuracy']});
 
-  // reset history
-  trainLossHistory=[]; trainAccHistory=[];
-  document.getElementById('modelStatus').textContent='training...';
+  const epochs = 20; const batchSize = 64;
+  await model.fit(X,y,{epochs,batchSize,validationSplit:0.12, callbacks:{
+    onEpochEnd: async (epoch, logs) => {
+      document.getElementById('mstat').innerText = `training... (epoch ${epoch+1}/${epochs})`;
+      await tf.nextFrame();
+    }
+  }});
+  document.getElementById('mstat').innerText = 'trained (in-browser)';
+}
 
-  const epochs = 30;
-  await model.fit(Xtensor, ytensor, {
-    epochs,
-    batchSize:64,
-    validationSplit:0.12,
-    callbacks: {
-      onEpochEnd: async (epoch, logs) => {
-        // update UI
-        document.getElementById('epochCount').textContent = epoch+1 + '/' + epochs;
-        document.getElementById('lastLoss').textContent = (logs.loss||0).toFixed(4);
-        document.getElementById('lastAcc').textContent = ((logs.acc||logs.accuracy||0)*100).toFixed(2)+'%';
-        const pct = Math.min(100, Math.round(((epoch+1)/epochs)*100));
-        document.getElementById('progressBar').style.width = pct + '%';
-        trainLossHistory.push(logs.loss||0);
-        trainAccHistory.push((logs.acc||logs.accuracy||0));
-        drawTrainChart();
-        await tf.nextFrame();
-      }
+// start loading dataset/scaler & train
+loadDatasetAndComputeScaler();
+
+// ----- normalization (use computed means/stds) -----
+function normalizeFeatureObj(feat){
+  if(!featureMeans) return null;
+  const out = {};
+  Object.keys(feat).forEach(k => {
+    if(['avgSpeed','speedVar','accVar','straightness','jitterVar'].includes(k)){
+      const mean = featureMeans[k] || 0; const std = featureStds[k] || 1;
+      out[k] = (feat[k] - mean) / std;
+    } else {
+      out[k] = feat[k];
     }
   });
-
-  document.getElementById('modelStatus').textContent='trained';
+  return out;
 }
 
-// Draw train chart (simple line chart)
-const chartCanvas = document.getElementById('trainChart');
-const chartCtx = chartCanvas.getContext('2d');
-chartCanvas.width = 350; chartCanvas.height = 80;
-function drawTrainChart(){
-  chartCtx.clearRect(0,0,chartCanvas.width,chartCanvas.height);
-  if(trainLossHistory.length===0) return;
-  // draw loss (red) and acc (green)
-  const maxLoss = Math.max(...trainLossHistory);
-  const maxAcc = 1;
-  chartCtx.lineWidth = 2;
-  // loss
-  chartCtx.strokeStyle = '#ff5252'; chartCtx.beginPath();
-  trainLossHistory.forEach((v,i)=>{
-    const x = (i/(trainLossHistory.length-1))*(chartCanvas.width-4)+2;
-    const y = chartCanvas.height - (v/maxLoss)*(chartCanvas.height-8) -4;
-    if(i===0) chartCtx.moveTo(x,y); else chartCtx.lineTo(x,y);
-  });
-  chartCtx.stroke();
-  // acc
-  chartCtx.strokeStyle = '#4caf50'; chartCtx.beginPath();
-  trainAccHistory.forEach((v,i)=>{
-    const x = (i/(trainAccHistory.length-1))*(chartCanvas.width-4)+2;
-    const y = chartCanvas.height - (v/maxAcc)*(chartCanvas.height-8) -4;
-    if(i===0) chartCtx.moveTo(x,y); else chartCtx.lineTo(x,y);
-  });
-  chartCtx.stroke();
+// update feature table realtime (B1)
+function updateFeatureTable(){
+  const feat = extractFeaturesFull(pathPoints);
+  featureTableBody.innerHTML = '';
+  if(!feat){ featureTableBody.innerHTML = '<tr><td colspan="3">not enough points</td></tr>'; return; }
+  const norm = normalizeFeatureObj(feat);
+  for(const [k,v] of Object.entries(feat)){
+    const tr = document.createElement('tr');
+    const tdName = document.createElement('td'); tdName.innerText = k;
+    const tdRaw = document.createElement('td'); tdRaw.innerHTML = `<span class="val-raw">${(typeof v==='number')? v.toFixed(4): v}</span>`;
+    const tdNorm = document.createElement('td'); tdNorm.innerHTML = norm ? `<span class="val-norm">${(typeof norm[k]==='number')? norm[k].toFixed(4) : '-'}</span>` : '<span class="small">scaler not ready</span>';
+    tr.appendChild(tdName); tr.appendChild(tdRaw); tr.appendChild(tdNorm);
+    featureTableBody.appendChild(tr);
+  }
 }
 
-// load and train on startup (async)
-loadAndTrainModel();
+// update loop for features (realtime)
+setInterval(()=>{ updateFeatureTable(); }, 250);
 
-// Feature extraction from pathPoints
-function extractFeatures(){
-  if(pathPoints.length<5) return [0,0,0,0,0,0];
-  const total = pathPoints.length; const dx=[]; const dy=[];
-  for(let i=1;i<total;i++){dx.push(pathPoints[i].x-pathPoints[i-1].x); dy.push(pathPoints[i].y-pathPoints[i-1].y);} 
-  const avgDx = dx.reduce((a,b)=>a+b,0)/dx.length;
-  const avgDy = dy.reduce((a,b)=>a+b,0)/dy.length;
-  const all = dx.concat(dy);
-  const meanAll = all.reduce((a,b)=>a+b,0)/all.length;
-  const speedVar = all.reduce((a,b)=>a+Math.pow(b-meanAll,2),0)/all.length;
-  let accVar=0; if(all.length>1){ for(let i=1;i<all.length;i++){ accVar += Math.pow(all[i]-all[i-1],2);} accVar /= (all.length-1); }
-  const pathLen = dx.reduce((s,v)=>s+Math.abs(v),0) + dy.reduce((s,v)=>s+Math.abs(v),0);
-  const straightness = Math.hypot(pathPoints[total-1].x-pathPoints[0].x, pathPoints[total-1].y-pathPoints[0].y)/(pathLen+0.01);
-  const jitterVar = all.slice(1).reduce((a,b,i)=>a+Math.abs(b-all[i]),0)/(all.length-1);
-  return [avgDx, avgDy, speedVar, accVar, straightness, jitterVar];
-}
+// predict button logic — map features to model input (use mapped vector same as training)
+document.getElementById('predictBtn').onclick = async ()=>{
+  const feat = extractFeaturesFull(pathPoints);
+  if(!feat){ predictOut.innerText = 'not enough points to predict'; return; }
+  // map to model's 5-feature vector [avgSpeed, speedVar, accVar, straightness, jitterVar]
+  const inVec = [ Math.abs(feat.avgSpeed), feat.speedVar, feat.accVar, feat.straightness, feat.curvatureVar || 0 ];
+  if(!model){ predictOut.innerText = 'Model not ready'; return; }
+  const input = tf.tensor2d([inVec]);
+  const out = model.predict(input);
+  const score = (await out.data())[0];
+  predictOut.innerText = `Label: ${score>0.5?'Likely BOT':'Likely Human'} — Bot score ${(score*100).toFixed(1)}%`;
+};
 
-// Prediction
-async function runPredict(){
-  const features = extractFeatures();
-  if(!model){ document.getElementById('predictResult').innerText='Model not ready'; return; }
-  const input = tf.tensor2d([features]);
-  const output = model.predict(input);
-  const score = (await output.data())[0];
-  document.getElementById('predictResult').innerText = `Label: ${score>0.5?'Likely BOT':'Likely Human'}
-Bot score: ${(score*100).toFixed(1)}%`;
-}
+// retrain button
+document.getElementById('retrain').onclick = async ()=>{ document.getElementById('mstat').innerText='retraining...'; await trainModelFromDataset(); };
 
-document.getElementById('runPredict').onclick = runPredict;
-
-// initial fingerprint display
-getFingerprint().then(fp=>document.getElementById('debug').textContent = JSON.stringify(fp,null,2));
 </script>
 </body>
 </html>
