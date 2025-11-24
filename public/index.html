@@ -2,25 +2,28 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<title>Bot / Human Behavior + Fingerprinting Demo</title>
+<title>Bot / Human Behavior + Fingerprinting + ML Prediction Demo (with Training Progress)</title>
 <style>
   body { margin:0; font-family:Arial; background:#111; color:#eee; }
-  #ui { position:fixed; top:0; left:0; width:320px; height:100%; background:#1b1b1b; padding:15px; overflow-y:auto; border-right:2px solid #333; }
-  #canvas { position:absolute; left:320px; top:0; }
+  #ui { position:fixed; top:0; left:0; width:420px; height:100%; background:#1b1b1b; padding:15px; overflow-y:auto; border-right:2px solid #333; }
+  #canvas { position:absolute; left:420px; top:0; }
   h2 { margin-top:0; }
-  .section { margin-bottom:20px; padding-bottom:15px; border-bottom:1px solid #444; }
+  .section { margin-bottom:18px; padding-bottom:12px; border-bottom:1px solid #444; }
   label { display:block; margin-top:6px; }
   input[type=range] { width:100%; }
-  select, button { width:100%; padding:6px; margin-top:6px; background:#333; color:#fff; border:1px solid #555; }
-  #debug { font-size:12px; white-space:pre-wrap; background:#000; padding:10px; margin-top:10px; border:1px solid #444; height:180px; overflow:auto; }
+  select, button { width:100%; padding:8px; margin-top:6px; background:#333; color:#fff; border:1px solid #555; cursor:pointer; }
+  #debug, #predictResult { font-size:12px; white-space:pre-wrap; background:#000; padding:10px; margin-top:10px; border:1px solid #444; height:140px; overflow:auto; }
+  .progress { height:14px; background:#262626; border:1px solid #333; margin-top:6px; }
+  .progress > .bar { height:100%; width:0%; background:linear-gradient(90deg,#4caf50,#8bc34a); }
+  canvas.small { width:100%; height:80px; background:#000; display:block; margin-top:6px; }
 </style>
 </head>
 <body>
 <div id="ui">
-  <h2>Bot / Human Simulator</h2>
+  <h2>Bot / Human ML Demo</h2>
 
   <div class="section">
-    <h3>Mode</h3>
+    <h3>Mode & Simulator</h3>
     <select id="mode">
       <option value="human">Human (Real)</option>
       <option value="straight">Bot: Straight</option>
@@ -58,273 +61,190 @@
     <button id="refreshFP">Recalculate Fingerprint</button>
     <div id="debug"></div>
   </div>
+
   <div class="section">
-    <h3>Prediction</h3>
+    <h3>Prediction (ML)</h3>
     <button id="runPredict">Run Prediction</button>
-    <div id="predictResult" style="margin-top:10px;font-size:14px;background:#000;padding:10px;border:1px solid #444;"></div>
+    <div id="predictResult">Model: <span id="modelStatus">loading...</span></div>
+  </div>
+
+  <div class="section">
+    <h3>Training Progress</h3>
+    <div>Epoch: <span id="epochCount">-</span></div>
+    <div class="progress"><div class="bar" id="progressBar"></div></div>
+    <div>Last Loss: <span id="lastLoss">-</span> | Last Acc: <span id="lastAcc">-</span></div>
+    <canvas id="trainChart" class="small"></canvas>
+    <div style="font-size:12px;margin-top:6px;color:#ccc">You can re-train from <code>dataset_bot_human.json</code> (2000 samples) loaded from same folder.</div>
   </div>
 
 </div>
 
 <canvas id="canvas"></canvas>
-
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
 <script>
+// Canvas setup
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
-canvas.width = window.innerWidth - 320;
+canvas.width = window.innerWidth - 420;
 canvas.height = window.innerHeight;
 
-// STATE
-let mouseX = 0, mouseY = 0;
-let heatmapEnabled = true;
-let pathEnabled = true;
-let botRunning = false;
-let botAngle = 0;
-let botT = 0;
-let pathPoints = [];
-let bezierP = [{x:100,y:200},{x:300,y:50},{x:600,y:400},{x:900,y:150}];
+// State
+let mouseX=canvas.width/2, mouseY=canvas.height/2;
+let heatmapEnabled=true, pathEnabled=true;
+let botRunning=false, botAngle=0, botT=0;
+let pathPoints=[];
+let speedVal=2,jitterVal=1,smoothVal=0.5;
 
-// Utility random
-function rand(n){ return Math.random() * n; }
-function jitter(v){ return v + (rand(jitterVal*2) - jitterVal); }
+// Training history for chart
+let trainLossHistory=[];
+let trainAccHistory=[];
+
+// Heatmap
+let heat = Array(canvas.width).fill(0).map(()=>Array(canvas.height).fill(0));
+function addHeat(x,y){if(heatmapEnabled&&x>=0&&y>=0&&x<canvas.width&&y<canvas.height) heat[Math.floor(x)][Math.floor(y)]++;}
+function renderHeat(){const img=ctx.getImageData(0,0,canvas.width,canvas.height); const d=img.data; for(let x=0;x<canvas.width;x++){for(let y=0;y<canvas.height;y++){let v=heat[x][y]; if(v>0){const i=(y*canvas.width+x)*4; d[i]=255;d[i+1]=100;d[i+2]=0;d[i+3]=Math.min(v*6,200);}}} ctx.putImageData(img,0,0);}
+
+// Mouse tracking
+canvas.addEventListener("mousemove",e=>{const rect=canvas.getBoundingClientRect(); mouseX=e.clientX-rect.left; mouseY=e.clientY-rect.top; addHeat(mouseX,mouseY); pathPoints.push({x:mouseX,y:mouseY});});
+
+// Bot simulation
+function botStraight(){mouseX+=speedVal;}
+function botZigzag(){mouseX+=speedVal; mouseY=canvas.height/2+Math.sin(mouseX/20)*80;}
+function botCircle(){botAngle+=0.02*speedVal; const r=150; mouseX=canvas.width/2+Math.cos(botAngle)*r; mouseY=canvas.height/2+Math.sin(botAngle)*r;}
+function botBezier(){botT+=0.002*speedVal; if(botT>1) botT=0; const t=botT,p=[{x:100,y:200},{x:300,y:50},{x:600,y:400},{x:900,y:150}]; mouseX=(1-t)**3*p[0].x+3*(1-t)**2*t*p[1].x+3*(1-t)*t**2*p[2].x+t**3*p[3].x; mouseY=(1-t)**3*p[0].y+3*(1-t)**2*t*p[1].y+3*(1-t)*t**2*p[2].y+t**3*p[3].y;}
+function botRandom(){mouseX+=(Math.random()*4-2)*speedVal; mouseY+=(Math.random()*4-2)*speedVal;}
+function botHumanlike(){mouseX+=speedVal+(Math.random()*3-1.5); mouseY+=Math.sin(mouseX/50)*2+(Math.random()*2-1);}
+const botMap={straight:botStraight,zigzag:botZigzag,circle:botCircle,bezier:botBezier,random:botRandom,humanlike:botHumanlike};
+
+// Loop
+function drawEverything(){ctx.clearRect(0,0,canvas.width,canvas.height); if(botRunning){const mode=document.getElementById("mode").value;if(mode!="human") botMap[mode](); addHeat(mouseX,mouseY); pathPoints.push({x:mouseX,y:mouseY});} if(pathEnabled){ctx.strokeStyle="rgba(0,200,255,0.8)";ctx.lineWidth=1.5;ctx.beginPath(); for(let i=0;i<pathPoints.length;i++){const p=pathPoints[i]; i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y);}ctx.stroke();} if(heatmapEnabled) renderHeat(); ctx.beginPath(); ctx.arc(mouseX,mouseY,5,0,Math.PI*2); ctx.fillStyle="#0f0"; ctx.fill();}
+function loop(){drawEverything(); requestAnimationFrame(loop);} loop();
 
 // Controls
-let speedVal = 2;
-let jitterVal = 1;
-let smoothVal = 0.5;
+document.getElementById("startBot").onclick=()=>botRunning=true;
+document.getElementById("stopBot").onclick=()=>botRunning=false;
+document.getElementById("speed").oninput=e=>{speedVal=Number(e.target.value); document.getElementById('speedVal').textContent=speedVal;};
+document.getElementById("jitter").oninput=e=>{jitterVal=Number(e.target.value); document.getElementById('jitterVal').textContent=jitterVal;};
+document.getElementById("smooth").oninput=e=>{smoothVal=Number(e.target.value); document.getElementById('smoothVal').textContent=smoothVal;};
 
-// UI bindings
-document.getElementById("speed").oninput = e => {
-  speedVal = Number(e.target.value);
-  document.getElementById("speedVal").textContent = speedVal;
-};
+document.getElementById("toggleHeat").onclick=()=>heatmapEnabled=!heatmapEnabled;
+document.getElementById("togglePath").onclick=()=>pathEnabled=!pathEnabled;
+document.getElementById("clearCanvas").onclick=()=>{heat=Array(canvas.width).fill(0).map(()=>Array(canvas.height).fill(0)); pathPoints=[]; document.getElementById('predictResult').innerText='';};
 
-document.getElementById("jitter").oninput = e => {
-  jitterVal = Number(e.target.value);
-  document.getElementById("jitterVal").textContent = jitterVal;
-};
+// Fingerprint
+async function getFingerprint(){let fp={};const c=document.createElement("canvas"),cctx=c.getContext("2d"); c.width=200;c.height=50;cctx.textBaseline="top";cctx.font="16px Arial";cctx.fillText("FINGERPRINT_TEST",10,10); fp.canvasHash=btoa(c.toDataURL()); try{ const audioCtx=new (window.AudioContext||window.webkitAudioContext)(); const osc=audioCtx.createOscillator(); const analyser=audioCtx.createAnalyser(); osc.connect(analyser); osc.start(); const arr=new Uint8Array(analyser.frequencyBinCount); analyser.getByteFrequencyData(arr); fp.audioHash=btoa(String.fromCharCode(...arr.slice(0,32))); osc.stop(); }catch(e){fp.audioHash='audio-not-available';} return fp;}
+document.getElementById("refreshFP").onclick=async()=>{const fp=await getFingerprint(); document.getElementById("debug").textContent=JSON.stringify(fp,null,2);};
 
-document.getElementById("smooth").oninput = e => {
-  smoothVal = Number(e.target.value);
-  document.getElementById("smoothVal").textContent = smoothVal;
-};
+// ML: load dataset and train in-browser with progress callbacks
+let model=null;
+async function loadAndTrainModel(){
+  document.getElementById('modelStatus').textContent='loading dataset...';
+  const resp = await fetch('dataset_bot_human.json');
+  const data = await resp.json();
+  const X = data.map(d=>d.features);
+  const y = data.map(d=>d.label);
+  const Xtensor = tf.tensor2d(X);
+  const ytensor = tf.tensor2d(y, [y.length,1]);
 
-// HEATMAP storage
-let heat = Array(canvas.width).fill(0).map(()=>Array(canvas.height).fill(0));
+  // create model
+  model = tf.sequential();
+  model.add(tf.layers.dense({units:32, activation:'relu', inputShape:[6]}));
+  model.add(tf.layers.dense({units:16, activation:'relu'}));
+  model.add(tf.layers.dense({units:1, activation:'sigmoid'}));
+  model.compile({optimizer:tf.train.adam(0.001), loss:'binaryCrossentropy', metrics:['accuracy']});
 
-function addHeat(x,y){
-  if(!heatmapEnabled) return;
-  if(x>=0 && y>=0 && x<canvas.width && y<canvas.height)
-    heat[Math.floor(x)][Math.floor(y)]++;
-}
+  // reset history
+  trainLossHistory=[]; trainAccHistory=[];
+  document.getElementById('modelStatus').textContent='training...';
 
-// Render heat
-function renderHeat(){
-  const img = ctx.getImageData(0,0,canvas.width,canvas.height);
-  const d = img.data;
-  for(let x=0; x<canvas.width; x++){
-    for(let y=0; y<canvas.height; y++){
-      let v = heat[x][y];
-      if(v>0){
-        const i = (y*canvas.width + x)*4;
-        d[i] = 255;
-        d[i+1] = 100;
-        d[i+2] = 0;
-        d[i+3] = Math.min(v*5,150);
+  const epochs = 30;
+  await model.fit(Xtensor, ytensor, {
+    epochs,
+    batchSize:64,
+    validationSplit:0.12,
+    callbacks: {
+      onEpochEnd: async (epoch, logs) => {
+        // update UI
+        document.getElementById('epochCount').textContent = epoch+1 + '/' + epochs;
+        document.getElementById('lastLoss').textContent = (logs.loss||0).toFixed(4);
+        document.getElementById('lastAcc').textContent = ((logs.acc||logs.accuracy||0)*100).toFixed(2)+'%';
+        const pct = Math.min(100, Math.round(((epoch+1)/epochs)*100));
+        document.getElementById('progressBar').style.width = pct + '%';
+        trainLossHistory.push(logs.loss||0);
+        trainAccHistory.push((logs.acc||logs.accuracy||0));
+        drawTrainChart();
+        await tf.nextFrame();
       }
     }
-  }
-  ctx.putImageData(img,0,0);
+  });
+
+  document.getElementById('modelStatus').textContent='trained';
 }
 
-// Human mouse
-canvas.addEventListener("mousemove", e => {
-  const rect = canvas.getBoundingClientRect();
-  mouseX = e.clientX - rect.left;
-  mouseY = e.clientY - rect.top;
-  addHeat(mouseX,mouseY);
-  pathPoints.push({x:mouseX,y:mouseY});
-});
-
-// BOT MOVEMENTS
-function botStraight(){ mouseX += speedVal; }
-
-function botZigzag(){
-  mouseX += speedVal;
-  mouseY = canvas.height/2 + Math.sin(mouseX/20)*80;
+// Draw train chart (simple line chart)
+const chartCanvas = document.getElementById('trainChart');
+const chartCtx = chartCanvas.getContext('2d');
+chartCanvas.width = 350; chartCanvas.height = 80;
+function drawTrainChart(){
+  chartCtx.clearRect(0,0,chartCanvas.width,chartCanvas.height);
+  if(trainLossHistory.length===0) return;
+  // draw loss (red) and acc (green)
+  const maxLoss = Math.max(...trainLossHistory);
+  const maxAcc = 1;
+  chartCtx.lineWidth = 2;
+  // loss
+  chartCtx.strokeStyle = '#ff5252'; chartCtx.beginPath();
+  trainLossHistory.forEach((v,i)=>{
+    const x = (i/(trainLossHistory.length-1))*(chartCanvas.width-4)+2;
+    const y = chartCanvas.height - (v/maxLoss)*(chartCanvas.height-8) -4;
+    if(i===0) chartCtx.moveTo(x,y); else chartCtx.lineTo(x,y);
+  });
+  chartCtx.stroke();
+  // acc
+  chartCtx.strokeStyle = '#4caf50'; chartCtx.beginPath();
+  trainAccHistory.forEach((v,i)=>{
+    const x = (i/(trainAccHistory.length-1))*(chartCanvas.width-4)+2;
+    const y = chartCanvas.height - (v/maxAcc)*(chartCanvas.height-8) -4;
+    if(i===0) chartCtx.moveTo(x,y); else chartCtx.lineTo(x,y);
+  });
+  chartCtx.stroke();
 }
 
-function botCircle(){
-  botAngle += 0.02 * speedVal;
-  const r = 150;
-  mouseX = canvas.width/2 + Math.cos(botAngle)*r;
-  mouseY = canvas.height/2 + Math.sin(botAngle)*r;
+// load and train on startup (async)
+loadAndTrainModel();
+
+// Feature extraction from pathPoints
+function extractFeatures(){
+  if(pathPoints.length<5) return [0,0,0,0,0,0];
+  const total = pathPoints.length; const dx=[]; const dy=[];
+  for(let i=1;i<total;i++){dx.push(pathPoints[i].x-pathPoints[i-1].x); dy.push(pathPoints[i].y-pathPoints[i-1].y);} 
+  const avgDx = dx.reduce((a,b)=>a+b,0)/dx.length;
+  const avgDy = dy.reduce((a,b)=>a+b,0)/dy.length;
+  const all = dx.concat(dy);
+  const meanAll = all.reduce((a,b)=>a+b,0)/all.length;
+  const speedVar = all.reduce((a,b)=>a+Math.pow(b-meanAll,2),0)/all.length;
+  let accVar=0; if(all.length>1){ for(let i=1;i<all.length;i++){ accVar += Math.pow(all[i]-all[i-1],2);} accVar /= (all.length-1); }
+  const pathLen = dx.reduce((s,v)=>s+Math.abs(v),0) + dy.reduce((s,v)=>s+Math.abs(v),0);
+  const straightness = Math.hypot(pathPoints[total-1].x-pathPoints[0].x, pathPoints[total-1].y-pathPoints[0].y)/(pathLen+0.01);
+  const jitterVar = all.slice(1).reduce((a,b,i)=>a+Math.abs(b-all[i]),0)/(all.length-1);
+  return [avgDx, avgDy, speedVar, accVar, straightness, jitterVar];
 }
 
-function botBezier(){
-  botT += 0.002 * speedVal;
-  if(botT>1) botT=0;
-  const t=botT, p=bezierP;
-  mouseX = (1-t)**3*p[0].x + 3*(1-t)**2*t*p[1].x + 3*(1-t)*t**2*p[2].x + t**3*p[3].x;
-  mouseY = (1-t)**3*p[0].y + 3*(1-t)**2*t*p[1].y + 3*(1-t)*t**2*p[2].y + t**3*p[3].y;
+// Prediction
+async function runPredict(){
+  const features = extractFeatures();
+  if(!model){ document.getElementById('predictResult').innerText='Model not ready'; return; }
+  const input = tf.tensor2d([features]);
+  const output = model.predict(input);
+  const score = (await output.data())[0];
+  document.getElementById('predictResult').innerText = `Label: ${score>0.5?'Likely BOT':'Likely Human'}
+Bot score: ${(score*100).toFixed(1)}%`;
 }
 
-function botRandom(){
-  mouseX += (rand(4)-2)*speedVal;
-  mouseY += (rand(4)-2)*speedVal;
-}
+document.getElementById('runPredict').onclick = runPredict;
 
-function botHumanlike(){
-  mouseX += speedVal + (rand(3)-1.5);
-  mouseY += Math.sin(mouseX/50)*2 + (rand(2)-1);
-}
-
-const botMap = {
-  straight: botStraight,
-  zigzag: botZigzag,
-  circle: botCircle,
-  bezier: botBezier,
-  random: botRandom,
-  humanlike: botHumanlike
-};
-
-// Main loop
-function loop(){
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-
-  if(botRunning){
-    const mode = document.getElementById("mode").value;
-    if(mode !== "human") botMap[mode]();
-    addHeat(mouseX,mouseY);
-    pathPoints.push({x:mouseX,y:mouseY});
-  }
-
-  // Draw path
-  if(pathEnabled){
-    ctx.strokeStyle = "rgba(0,200,255,0.8)";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    for(let i=0;i<pathPoints.length;i++){
-      const p = pathPoints[i];
-      if(i===0) ctx.moveTo(p.x,p.y);
-      else ctx.lineTo(p.x,p.y);
-    }
-    ctx.stroke();
-  }
-
-  // Draw heat
-  if(heatmapEnabled) renderHeat();
-
-  // Cursor
-  ctx.beginPath();
-  ctx.arc(mouseX,mouseY,5,0,Math.PI*2);
-  ctx.fillStyle = "#0f0";
-  ctx.fill();
-
-  requestAnimationFrame(loop);
-}
-loop();
-
-// Buttons
-
-document.getElementById("startBot").onclick = () => botRunning = true;
-document.getElementById("stopBot").onclick = () => botRunning = false;
-
-document.getElementById("toggleHeat").onclick = () => heatmapEnabled = !heatmapEnabled;
-document.getElementById("togglePath").onclick = () => pathEnabled = !pathEnabled;
-
-// Clear screen
-function clearAll(){
-  heat = Array(canvas.width).fill(0).map(()=>Array(canvas.height).fill(0));
-  pathPoints = [];
-}
-document.getElementById("clearCanvas").onclick = clearAll;
-
-// Hotkeys
-window.addEventListener("keydown", e => {
-  if(e.key === "c") clearAll();
-  if(e.key === "h") heatmapEnabled = !heatmapEnabled;
-  if(e.key === "p") pathEnabled = !pathEnabled;
-});
-
-// 🔥 Prediction Heuristic
-function predictBotHuman(){
-  // Features
-  const total = pathPoints.length;
-  if(total < 10) return {score:0.5, label:"Insufficient data"};
-
-  let avgDx=0, avgDy=0, variance=0;
-  for(let i=1;i<total;i++){
-    const dx = pathPoints[i].x - pathPoints[i-1].x;
-    const dy = pathPoints[i].y - pathPoints[i-1].y;
-    avgDx += dx; avgDy += dy;
-    variance += Math.abs(dx) + Math.abs(dy);
-  }
-  avgDx/=total; avgDy/=total;
-  variance/=total;
-
-  let straightness=0;
-  if(total>5){
-    const start=pathPoints[0], end=pathPoints[total-1];
-    const dist = Math.hypot(end.x-start.x,end.y-start.y);
-    const pathLen = pathPoints.reduce((s,p,i)=>i?s+Math.hypot(p.x-pathPoints[i-1].x,p.y-pathPoints[i-1].y):0,0);
-    straightness = dist / (pathLen+0.01);
-  }
-
-  // heuristics
-  let botScore=0;
-  if(straightness>0.85) botScore+=0.4;
-  if(variance<1.2) botScore+=0.3;
-  if(Math.abs(avgDx)>15) botScore+=0.2;
-
-  return {
-    score: botScore,
-    label: botScore>0.5?"Likely BOT":"Likely Human"
-  };
-}
-
-// bind
-window.addEventListener("DOMContentLoaded",()=>{
-  document.getElementById("runPredict").onclick = ()=>{
-    const r = predictBotHuman();
-    document.getElementById("predictResult").innerText = `Label: ${r.label}\nBot score: ${(r.score*100).toFixed(1)}%`;
-  };
-});
-
-// 🔥 Fingerprinting: Canvas + Audio
-async function getFingerprint(){
-  let fp = {};
-
-  // Canvas
-  const c = document.createElement("canvas");
-  const cctx = c.getContext("2d");
-  c.width = 200; c.height = 50;
-  cctx.textBaseline = "top";
-  cctx.font = "16px Arial";
-  cctx.fillText("FINGERPRINT_TEST",10,10);
-  fp.canvasHash = btoa(c.toDataURL());
-
-  // Audio
-  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const osc = audioCtx.createOscillator();
-  const analyser = audioCtx.createAnalyser();
-  osc.connect(analyser);
-  osc.start();
-  const arr = new Uint8Array(analyser.frequencyBinCount);
-  analyser.getByteFrequencyData(arr);
-  fp.audioHash = btoa(String.fromCharCode(...arr.slice(0,32)));
-  osc.stop();
-
-  return fp;
-}
-
-async function refreshFingerprint(){
-  const fp = await getFingerprint();
-  document.getElementById("debug").textContent = JSON.stringify(fp,null,2);
-}
-document.getElementById("refreshFP").onclick = refreshFingerprint;
-refreshFingerprint();
+// initial fingerprint display
+getFingerprint().then(fp=>document.getElementById('debug').textContent = JSON.stringify(fp,null,2));
 </script>
-
 </body>
 </html>
