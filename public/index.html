@@ -283,7 +283,17 @@ async function loadDatasetAndComputeScaler(){
 let model = null;
 async function trainModelFromDataset(){
   if(!dataset) return;
-  // convert dataset to tensors with feature mapping same as above
+
+  // check if saved model exists
+  try {
+    model = await tf.loadLayersModel('localstorage://bot-human-model');
+    modelStatus.innerText = 'loaded pre-trained model from LocalStorage';
+    return;
+  } catch(e){
+    console.log('No pre-trained model found, training from scratch...');
+  }
+
+  // convert dataset to tensors with feature mapping
   const mapped = dataset.map(d=>{
     const f = d.features;
     return [ (Math.abs(f[0]) + Math.abs(f[1]))/2, f[2], f[3], f[4], f[5] ];
@@ -291,6 +301,7 @@ async function trainModelFromDataset(){
   const labels = dataset.map(d=>d.label);
   const X = tf.tensor2d(mapped);
   const y = tf.tensor2d(labels.map(v=>[v]));
+
   // build model
   model = tf.sequential();
   model.add(tf.layers.dense({units:32, activation:'relu', inputShape:[5]}));
@@ -301,12 +312,16 @@ async function trainModelFromDataset(){
   const epochs = 20; const batchSize = 64;
   await model.fit(X,y,{epochs,batchSize,validationSplit:0.12, callbacks:{
     onEpochEnd: async (epoch, logs) => {
-      document.getElementById('mstat').innerText = `training... (epoch ${epoch+1}/${epochs})`;
+      modelStatus.innerText = `training... (epoch ${epoch+1}/${epochs})`;
       await tf.nextFrame();
     }
   }});
-  document.getElementById('mstat').innerText = 'trained (in-browser)';
+
+  // save model to localstorage
+  await model.save('localstorage://bot-human-model');
+  modelStatus.innerText = 'trained & saved to LocalStorage';
 }
+
 
 // start loading dataset/scaler & train
 loadDatasetAndComputeScaler();
