@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Bot Detection POC</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; }
+    #result { margin-top: 20px; font-size: 18px; }
+  </style>
+</head>
+<body>
+
+<h1>Bot Detection POC</h1>
+<p>ขยับเมาส์ / พิมพ์ / คลิก แล้วกดปุ่ม "Assess" เพื่อดูคะแนน human vs bot</p>
+
+<button id="assessBtn">Assess</button>
+<div id="result"></div>
+
+<script>
+async function hashString(s) {
+  const buf = new TextEncoder().encode(s);
+  const hash = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(hash)].map(x => x.toString(16).padStart(2, "0")).join("");
+}
+
+function collectBasic() {
+  return {
+    ua: navigator.userAgent,
+    platform: navigator.platform,
+    language: navigator.language,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    screen: { w: screen.width, h: screen.height }
+  };
+}
+
+function canvasFingerprint() {
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d");
+  ctx.textBaseline = "top";
+  ctx.font = "16px Arial";
+  ctx.fillStyle = "#f60";
+  ctx.fillText("POC-FP", 2, 20);
+  return c.toDataURL();
+}
+
+async function initFingerprint() {
+  const basic = collectBasic();
+  const canvas = canvasFingerprint();
+  const raw = JSON.stringify({ basic, canvas });
+  const fp = await hashString(raw);
+
+  const r = await fetch("/api/fingerprint", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      fp,
+      basic,
+      canvasHash: await hashString(canvas)
+    })
+  });
+
+  const data = await r.json();
+  window.pocToken = data.token;
+}
+
+const events = [];
+window.addEventListener("mousemove", e => {
+  events.push({ type: "mousemove", x: e.clientX, y: e.clientY, t: Date.now() });
+});
+window.addEventListener("click", e => {
+  events.push({ type: "click", x: e.clientX, y: e.clientY, t: Date.now() });
+});
+window.addEventListener("keydown", e => {
+  events.push({ type: "keydown", key: e.key, t: Date.now() });
+});
+
+setInterval(() => {
+  if (!events.length) return;
+
+  fetch("/api/telemetry", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-session-id": "demo-session"
+    },
+    body: JSON.stringify({ events: events.splice(0) })
+  });
+}, 1500);
+
+document.getElementById("assessBtn").onclick = async () => {
+  const r = await fetch("/api/assess", {
+    headers: {
+      "x-auth-token": window.pocToken,
+      "x-session-id": "demo-session"
+    }
+  });
+
+  const data = await r.json();
+  document.getElementById("result").innerText =
+    JSON.stringify(data, null, 2);
+};
+
+// run fingerprint once page loaded
+initFingerprint();
+</script>
+
+</body>
+</html>
